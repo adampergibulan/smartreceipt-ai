@@ -1,7 +1,7 @@
 import sys
 
 from bot.config import RECEIPTS_DIR
-from bot.gemini_client import extract_receipt
+from bot.gemini_client import ReceiptAnalysisError, extract_receipt
 from bot.validation import validate_receipt
 
 # Use a file name from the command line, or the newest receipt
@@ -29,6 +29,8 @@ try:
         print(f"  REVIEW: {note}")
     for note in result.info_notes:
         print(f"  info: {note}")
+except ReceiptAnalysisError as error:
+    print("Failed:", error.kind)
+    print("User would see:", error.user_message)
 except Exception as error:
-    print("Extraction failed:", type(error).__name__)
-    print(str(error)[:400])
+    print("Unexpected failure:", type(error).__name__)
