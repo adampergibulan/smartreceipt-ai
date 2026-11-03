@@ -1,8 +1,8 @@
 import sys
-from pathlib import Path
 
 from bot.config import RECEIPTS_DIR
 from bot.gemini_client import extract_receipt
+from bot.validation import validate_receipt
 
 # Use a file name from the command line, or the newest receipt
 if len(sys.argv) > 1:
@@ -18,8 +18,17 @@ print(f"Testing with: {image_path.name}")
 
 try:
     data = extract_receipt(image_path)
-    # Printed here for development only. Use dummy receipts.
-    print(data.model_dump_json(indent=2))
+    result = validate_receipt(data)
+
+    print(f"Supplier: {data.supplier_name}")
+    print(f"Date: {result.receipt_date} ({result.date_source})")
+    print(f"Items: {len(data.items)}")
+    print(f"Grand total: {data.grand_total}")
+    print(f"Review required: {result.review_required}")
+    for note in result.review_notes:
+        print(f"  REVIEW: {note}")
+    for note in result.info_notes:
+        print(f"  info: {note}")
 except Exception as error:
     print("Extraction failed:", type(error).__name__)
     print(str(error)[:400])
