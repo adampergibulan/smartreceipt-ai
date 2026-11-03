@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import datetime
 
@@ -6,6 +7,9 @@ from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from bot.config import AUTHORIZED_USER_IDS, RECEIPTS_DIR
+from bot.formatter import build_receipt_message, split_message
+from bot.gemini_client import ReceiptAnalysisError, extract_receipt
+from bot.validation import validate_receipt
 
 
 def is_authorized(update: Update) -> bool:
@@ -13,11 +17,13 @@ def is_authorized(update: Update) -> bool:
     user = update.effective_user
     return user is not None and user.id in AUTHORIZED_USER_IDS
 
+
 def make_receipt_filename() -> str:
     """Create a unique filename like receipt_20261023_a1b2c3d4.jpg"""
     date_part = datetime.now().strftime("%Y%m%d")
     unique_part = uuid.uuid4().hex[:8]
     return f"receipt_{date_part}_{unique_part}.jpg"
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Runs when the user sends /start to the bot."""
@@ -35,7 +41,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = (
         f"Hello {user.first_name}! 👋\n\n"
         "Welcome to SmartReceipt AI.\n"
-        "Send me a photo of your receipt and I will confirm that I received it."
+        "Send me a photo of your receipt and I will read it for you."
     )
     await update.message.reply_text(message)
 
@@ -64,7 +70,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         telegram_file = await photo.get_file()
         await telegram_file.download_to_drive(save_path)
     except TelegramError as error:
-        # Problem talking to Telegram (network, timeout, API error)
         print(f"Telegram error while downloading: {error}")
         await update.message.reply_text(
             "⚠️ Sorry, I could not download your image from Telegram.\n"
@@ -72,7 +77,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     except OSError as error:
-        # Problem saving the file on this laptop (disk full, permissions)
         print(f"File error while saving: {error}")
         await update.message.reply_text(
             "⚠️ Sorry, something went wrong while saving your receipt.\n"
@@ -84,8 +88,42 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "✅ Receipt image received and saved successfully!\n"
-        f"Filename: {filename}"
+        f"Filename: {filename}\n\n"
+        "⏳ Analysing the receipt, please wait..."
     )
+
+    # --- Phase 3: analyse the SAVED image with Gemini ---
+    try:
+        # Run the slow AI call in a background thread so the bot stays responsive
+        data = await asyncio.to_thread(extract_receipt, save_path)
+        result = validate_receipt(data)
+        message = build_receipt_message(data, result)
+    except ReceiptAnalysisError as error:
+        # Expected problems. The user message is safe to show.
+        print(f"Analysis failed for {filename}: {error.kind}")
+        await update.message.reply_text(
+            f"⚠️ {error.user_message}\n\n"
+            "Your image was saved. You can send it again or send a clearer photo."
+        )
+        return
+    except Exception as error:
+        # Anything unexpected. Log only the error type, never details.
+        print(f"Unexpected analysis error for {filename}: {type(error).__name__}")
+        await update.message.reply_text(
+            "⚠️ Something went wrong while analysing your receipt.\n"
+            "Your image was saved. Please try again later."
+        )
+        return
+
+    print(f"Analysis finished for {filename}: review_required={result.review_required}")
+
+    # Send the summary. Long summaries are split to fit Telegram's limit.
+    try:
+        for part in split_message(message):
+            await update.message.reply_text(part)
+    except TelegramError as error:
+        print(f"Telegram error while sending the summary: {type(error).__name__}")
+
 
 async def handle_unsupported(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Runs when the user sends anything that is not a photo or a command."""
